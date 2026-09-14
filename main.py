@@ -28,6 +28,28 @@ OCTAVE_RANGE = 3.0  # pitch spans this many octaves top-to-bottom of frame
 PINCH_THRESHOLD = 0.1  # normalized fingertip distance below which fingers count as touching
 DEFAULT_AMP = 0.6  # volume used when the left (volume) hand has never been pinched yet
 
+# Hand tracking flickers frame-to-frame - a hand near the frame edge, or
+# mid-pinch (fingers occluding each other), can drop out for a frame or two
+# even though it never actually left. Tolerate a brief gap before treating
+# the right hand as truly gone, instead of cutting audio on every flicker.
+RIGHT_HAND_GRACE_MS = 400
+
+# As a hand exits the frame, MediaPipe's landmark regressor can't see the
+# real fingertip position anymore and extrapolates - visibly "sticking" a
+# fingertip near the frame border (e.g. the thumb pinning to y=1) instead of
+# just losing the hand. Ignore fader-position updates once a controlling
+# fingertip is this close to any edge, so that glitch can't drag the volume
+# or pitch to an extreme right as the hand leaves.
+EDGE_MARGIN = 0.1
+
+# MediaPipe doesn't expose a separate "is this really a hand" quality score
+# in this API, but its Left/Right handedness confidence reliably drops during
+# degraded/ghost tracking (e.g. still reporting a hand for a few frames after
+# it's actually left frame) even when the reported position isn't obviously
+# near an edge. Below this, treat the frame as if the hand weren't seen at
+# all - both for trusting its position and for "is it still there" timing.
+HANDEDNESS_CONFIDENCE_THRESHOLD = 0.85
+
 CAM_INDEX = 0
 DISPLAY_WIDTH = 1280
 DISPLAY_HEIGHT = 720
@@ -43,6 +65,24 @@ def freq_from_y(y_norm: float) -> float:
 def amp_from_y(y_norm: float) -> float:
     """y_norm in [0, 1], 0 = top of frame. Higher hand -> louder."""
     return float(np.clip(1.0 - y_norm, 0.0, 1.0))
+
+
+def in_bounds(*landmarks, margin: float = EDGE_MARGIN) -> bool:
+    """False if any landmark is close enough to the frame border that its
+    position may be a MediaPipe extrapolation artifact rather than real."""
+    return all(
+        margin <= lm.x <= 1.0 - margin and margin <= lm.y <= 1.0 - margin
+        for lm in landmarks
+    )
+
+
+def is_trustworthy(handedness_score: float, *landmarks) -> bool:
+    """False if this frame's hand data looks like degraded/ghost tracking
+    rather than a real, clearly-visible hand."""
+    return (
+        handedness_score >= HANDEDNESS_CONFIDENCE_THRESHOLD
+        and in_bounds(*landmarks)
+    )
 
 
 def draw_hand(frame, landmarks, label, pinched=False):
@@ -81,6 +121,7 @@ def main():
     start_time = time.time()
     current_amp = DEFAULT_AMP
     current_freq = freq_from_y(0.5)
+    last_right_seen_ms = None
     try:
         while True:
             ok, frame = cap.read()
@@ -97,8 +138,11 @@ def main():
             result = tracker.process(frame_rgb, timestamp_ms)
 
             hands = {}
+            scores = {}
             for landmarks, handedness in zip(result.hand_landmarks, result.handedness):
-                hands[handedness[0].category_name] = landmarks
+                name = handedness[0].category_name
+                hands[name] = landmarks
+                scores[name] = handedness[0].score
 
             right = hands.get("Right")
             left = hands.get("Left")
@@ -110,7 +154,7 @@ def main():
                     index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y
                 ))
                 vol_pinched = pinch_dist < PINCH_THRESHOLD
-                if vol_pinched:
+                if vol_pinched and is_trustworthy(scores["Left"], thumb_tip, index_tip):
                     pinch_y = (index_tip.y + thumb_tip.y) / 2.0
                     current_amp = amp_from_y(pinch_y)
                 draw_hand(frame, left, "Left", vol_pinched)
@@ -122,11 +166,20 @@ def main():
                     index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y
                 ))
                 pitch_pinched = pinch_dist < PINCH_THRESHOLD
-                if pitch_pinched:
+                trustworthy = is_trustworthy(scores["Right"], thumb_tip, index_tip)
+                if trustworthy:
+                    last_right_seen_ms = timestamp_ms
+                if pitch_pinched and trustworthy:
                     pinch_y = (index_tip.y + thumb_tip.y) / 2.0
                     current_freq = freq_from_y(pinch_y)
                 draw_hand(frame, right, "Right", pitch_pinched)
 
+            right_active = (
+                last_right_seen_ms is not None
+                and timestamp_ms - last_right_seen_ms <= RIGHT_HAND_GRACE_MS
+            )
+
+            if right_active:
                 synth.set_frequency(current_freq)
                 synth.set_amplitude(current_amp)
 

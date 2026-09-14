@@ -20,7 +20,12 @@ FINGERTIPS = (THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)
 
 
 class HandTracker:
-    def __init__(self, num_hands: int = 1, min_detection_confidence: float = 0.5):
+    def __init__(
+        self,
+        num_hands: int = 1,
+        min_detection_confidence: float = 0.5,
+        min_tracking_confidence: float = 0.5,
+    ):
         if not MODEL_PATH.exists():
             raise FileNotFoundError(
                 f"Model not found at {MODEL_PATH}. Download it with:\n"
@@ -29,13 +34,18 @@ class HandTracker:
                 "hand_landmarker/float16/1/hand_landmarker.task"
             )
 
+        # Loosening these to tolerate frame-edge/pinch flicker (a past fix)
+        # backfired: it also let MediaPipe keep "tracking" a hand for a while
+        # after it actually left frame, using stale/extrapolated positions
+        # instead of just dropping it (main.py's handedness-confidence gate
+        # is the real fix for that staleness; keep these at their defaults).
         options = vision.HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
             running_mode=vision.RunningMode.VIDEO,
             num_hands=num_hands,
             min_hand_detection_confidence=min_detection_confidence,
-            min_hand_presence_confidence=min_detection_confidence,
-            min_tracking_confidence=min_detection_confidence,
+            min_hand_presence_confidence=min_tracking_confidence,
+            min_tracking_confidence=min_tracking_confidence,
         )
         self._landmarker = vision.HandLandmarker.create_from_options(options)
 
