@@ -10,6 +10,9 @@
     whatever it was last set to. If the left hand isn't visible at all,
     volume defaults to DEFAULT_AMP as long as the right hand is present.
   - Right hand not visible -> silent.
+  - Peace sign (Victory gesture) with the right hand freezes pitch and
+    volume exactly where they are - pinches and hand visibility stop
+    affecting the sound at all. Peace sign with the left hand unfreezes.
 
 Press 'q' to quit.
 """
@@ -21,6 +24,10 @@ import numpy as np
 
 from audio_engine import SineSynth
 from hand_tracker import HandTracker, HandLandmarksConnections, INDEX_TIP, THUMB_TIP
+
+# MediaPipe's built-in canned gesture for a peace sign.
+PEACE_GESTURE = "Victory"
+GESTURE_CONFIDENCE_THRESHOLD = 0.5
 
 MIN_FREQ_HZ = 130.81  # C3
 OCTAVE_RANGE = 3.0  # pitch spans this many octaves top-to-bottom of frame
@@ -122,6 +129,7 @@ def main():
     current_amp = DEFAULT_AMP
     current_freq = freq_from_y(0.5)
     last_right_seen_ms = None
+    frozen = False
     try:
         while True:
             ok, frame = cap.read()
@@ -139,13 +147,58 @@ def main():
 
             hands = {}
             scores = {}
-            for landmarks, handedness in zip(result.hand_landmarks, result.handedness):
+            gestures = {}
+            for landmarks, handedness, gesture in zip(
+                result.hand_landmarks, result.handedness, result.gestures
+            ):
                 name = handedness[0].category_name
                 hands[name] = landmarks
                 scores[name] = handedness[0].score
+                gestures[name] = (gesture[0].category_name, gesture[0].score) if gesture else (None, 0.0)
 
             right = hands.get("Right")
             left = hands.get("Left")
+            right_gesture, right_gesture_score = gestures.get("Right", (None, 0.0))
+            left_gesture, left_gesture_score = gestures.get("Left", (None, 0.0))
+
+            # Check transitions against the state at the start of the frame,
+            # so a peace sign on both hands at once can't freeze and
+            # immediately unfreeze (or vice versa) within the same frame.
+            frozen_before = frozen
+            if (
+                not frozen_before
+                and right_gesture == PEACE_GESTURE
+                and right_gesture_score >= GESTURE_CONFIDENCE_THRESHOLD
+            ):
+                frozen = True
+            if (
+                frozen_before
+                and left_gesture == PEACE_GESTURE
+                and left_gesture_score >= GESTURE_CONFIDENCE_THRESHOLD
+            ):
+                frozen = False
+                # Give the right hand a fresh grace window instead of muting
+                # immediately just because it wasn't seen during the freeze.
+                last_right_seen_ms = timestamp_ms
+
+            if frozen:
+                if left is not None:
+                    draw_hand(frame, left, "Left")
+                if right is not None:
+                    draw_hand(frame, right, "Right")
+
+                synth.set_frequency(current_freq)
+                synth.set_amplitude(current_amp)
+                cv2.putText(
+                    frame,
+                    f"FROZEN  {current_freq:6.1f} Hz  vol {current_amp:.2f}"
+                    "  (peace sign w/ left hand to resume)",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 200, 0), 2,
+                )
+                cv2.imshow("Hand Synth", frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+                continue
 
             vol_pinched = False
             if left is not None:
