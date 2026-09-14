@@ -1,7 +1,9 @@
 """Hand-tracked synthesizer.
 
-  - Right hand: vertical position of the index fingertip sets pitch
-    (higher on screen = higher pitch).
+  - Right hand: pinch (thumb tip touching index fingertip) grabs a pitch
+    fader. While pinched, the vertical position of the pinch point sets
+    pitch (higher = higher pitch, spans 3 octaves from C3). Releasing the
+    pinch holds the pitch at whatever it was last set to.
   - Left hand: pinch (thumb tip touching index fingertip) grabs a volume
     fader. While pinched, the vertical position of the pinch point sets
     volume (higher = louder). Releasing the pinch holds the volume at
@@ -23,10 +25,12 @@ from hand_tracker import HandTracker, HandLandmarksConnections, INDEX_TIP, THUMB
 MIN_FREQ_HZ = 130.81  # C3
 OCTAVE_RANGE = 3.0  # pitch spans this many octaves top-to-bottom of frame
 
-PINCH_THRESHOLD = 0.1  # normalized thumb-index distance below which fingers count as touching
+PINCH_THRESHOLD = 0.1  # normalized fingertip distance below which fingers count as touching
 DEFAULT_AMP = 0.6  # volume used when the left (volume) hand has never been pinched yet
 
 CAM_INDEX = 0
+DISPLAY_WIDTH = 1280
+DISPLAY_HEIGHT = 720
 
 
 def freq_from_y(y_norm: float) -> float:
@@ -50,13 +54,11 @@ def draw_hand(frame, landmarks, label, pinched=False):
     for x, y in pts:
         cv2.circle(frame, (x, y), 4, (0, 255, 255), -1)
 
-    if label == "Right":  # pitch hand
-        cv2.circle(frame, pts[INDEX_TIP], 9, (0, 0, 255), 2)
-    elif label == "Left":  # volume hand
-        pinch_color = (0, 255, 0) if pinched else (255, 0, 0)
-        cv2.circle(frame, pts[INDEX_TIP], 9, pinch_color, 2)
-        cv2.circle(frame, pts[THUMB_TIP], 9, pinch_color, 2)
-        cv2.line(frame, pts[THUMB_TIP], pts[INDEX_TIP], pinch_color, 2)
+    base_color = (0, 0, 255) if label == "Right" else (255, 0, 0)
+    pinch_color = (0, 255, 0) if pinched else base_color
+    cv2.circle(frame, pts[INDEX_TIP], 9, pinch_color, 2)
+    cv2.circle(frame, pts[THUMB_TIP], 9, pinch_color, 2)
+    cv2.line(frame, pts[THUMB_TIP], pts[INDEX_TIP], pinch_color, 2)
 
     wrist_x, wrist_y = pts[0]
     cv2.putText(
@@ -73,9 +75,12 @@ def main():
     cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open camera index {CAM_INDEX}")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, DISPLAY_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, DISPLAY_HEIGHT)
 
     start_time = time.time()
     current_amp = DEFAULT_AMP
+    current_freq = freq_from_y(0.5)
     try:
         while True:
             ok, frame = cap.read()
@@ -84,6 +89,8 @@ def main():
                 break
 
             frame = cv2.flip(frame, 1)  # mirror for natural interaction
+            if frame.shape[1] != DISPLAY_WIDTH or frame.shape[0] != DISPLAY_HEIGHT:
+                frame = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             timestamp_ms = int((time.time() - start_time) * 1000)
 
@@ -96,28 +103,41 @@ def main():
             right = hands.get("Right")
             left = hands.get("Left")
 
-            pinched = False
+            vol_pinched = False
             if left is not None:
                 thumb_tip, index_tip = left[THUMB_TIP], left[INDEX_TIP]
                 pinch_dist = float(np.hypot(
                     index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y
                 ))
-                pinched = pinch_dist < PINCH_THRESHOLD
-                if pinched:
+                vol_pinched = pinch_dist < PINCH_THRESHOLD
+                if vol_pinched:
                     pinch_y = (index_tip.y + thumb_tip.y) / 2.0
                     current_amp = amp_from_y(pinch_y)
-                draw_hand(frame, left, "Left", pinched)
+                draw_hand(frame, left, "Left", vol_pinched)
 
+            pitch_pinched = False
             if right is not None:
-                draw_hand(frame, right, "Right")
-                freq = freq_from_y(right[INDEX_TIP].y)
-                synth.set_frequency(freq)
+                thumb_tip, index_tip = right[THUMB_TIP], right[INDEX_TIP]
+                pinch_dist = float(np.hypot(
+                    index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y
+                ))
+                pitch_pinched = pinch_dist < PINCH_THRESHOLD
+                if pitch_pinched:
+                    pinch_y = (index_tip.y + thumb_tip.y) / 2.0
+                    current_freq = freq_from_y(pinch_y)
+                draw_hand(frame, right, "Right", pitch_pinched)
+
+                synth.set_frequency(current_freq)
                 synth.set_amplitude(current_amp)
 
+                hud = f"{current_freq:6.1f} Hz  vol {current_amp:.2f}"
+                if pitch_pinched:
+                    hud += "  PITCH"
+                if vol_pinched:
+                    hud += "  VOL"
                 cv2.putText(
-                    frame, f"{freq:6.1f} Hz  vol {current_amp:.2f}"
-                    + ("  PINCH" if pinched else ""),
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2,
+                    frame, hud, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2,
                 )
             else:
                 synth.set_amplitude(0.0)

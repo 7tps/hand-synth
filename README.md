@@ -1,9 +1,10 @@
 # hand-synth
 
-A webcam-controlled synthesizer. MediaPipe tracks both hands; OpenCV shows the
-camera feed with an overlay; a sine oscillator plays through your speakers.
+A webcam-controlled synthesizer. MediaPipe tracks both hands; OpenCV shows a
+1280x720 camera feed with an overlay; a sine oscillator plays through your
+speakers.
 
-- **Pitch** (right hand): vertical position of your index fingertip (higher on screen = higher pitch, spans 3 octaves from C3).
+- **Pitch** (right hand): pinch your thumb and index finger together to grab a pitch fader, then move your hand up/down to set it (higher = higher pitch, spans 3 octaves from C3). Releasing the pinch holds the pitch where you left it.
 - **Volume** (left hand): pinch your thumb and index finger together to grab a volume fader, then move your hand up/down to set the level (higher = louder). Releasing the pinch holds the volume where you left it. If the left hand isn't visible at all, volume defaults to a fixed level as long as the right hand is.
 - Right hand not in frame -> silent.
 
