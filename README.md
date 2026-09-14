@@ -1,11 +1,11 @@
 # hand-synth
 
-A webcam-controlled synthesizer. MediaPipe tracks your hand; OpenCV shows the
+A webcam-controlled synthesizer. MediaPipe tracks both hands; OpenCV shows the
 camera feed with an overlay; a sine oscillator plays through your speakers.
 
-- **Pitch**: vertical position of your index fingertip (higher on screen = higher pitch, spans 3 octaves from C3).
-- **Volume**: distance between your thumb tip and index fingertip (spread apart = louder).
-- No hand in frame -> silent.
+- **Pitch** (right hand): vertical position of your index fingertip (higher on screen = higher pitch, spans 3 octaves from C3).
+- **Volume** (left hand): distance between your thumb tip and index fingertip (spread apart = louder). If the left hand isn't visible, volume defaults to a fixed level as long as the right hand is.
+- Right hand not in frame -> silent.
 
 ## Setup
 

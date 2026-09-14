@@ -1,8 +1,11 @@
 """Hand-tracked synthesizer.
 
-Point your index finger at the camera:
-  - Vertical position of the index fingertip sets pitch (higher = higher pitch).
-  - Distance between thumb tip and index fingertip sets volume (spread = louder).
+  - Right hand: vertical position of the index fingertip sets pitch
+    (higher on screen = higher pitch).
+  - Left hand: distance between thumb tip and index fingertip sets volume
+    (spread apart = louder). If the left hand isn't visible, volume defaults
+    to DEFAULT_AMP as long as the right hand is present.
+  - Right hand not visible -> silent.
 
 Press 'q' to quit.
 """
@@ -20,6 +23,7 @@ OCTAVE_RANGE = 3.0  # pitch spans this many octaves top-to-bottom of frame
 
 MIN_PINCH = 0.03  # normalized thumb-index distance -> silence
 MAX_PINCH = 0.35  # normalized thumb-index distance -> full volume
+DEFAULT_AMP = 0.6  # volume used when only the right (pitch) hand is visible
 
 CAM_INDEX = 0
 
@@ -36,7 +40,7 @@ def amp_from_pinch(pinch_dist: float) -> float:
     return float(np.clip(t, 0.0, 1.0))
 
 
-def draw_hand(frame, landmarks):
+def draw_hand(frame, landmarks, label):
     h, w = frame.shape[:2]
     pts = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
 
@@ -45,13 +49,22 @@ def draw_hand(frame, landmarks):
     for x, y in pts:
         cv2.circle(frame, (x, y), 4, (0, 255, 255), -1)
 
-    cv2.circle(frame, pts[INDEX_TIP], 9, (0, 0, 255), 2)
-    cv2.circle(frame, pts[THUMB_TIP], 9, (255, 0, 0), 2)
-    cv2.line(frame, pts[THUMB_TIP], pts[INDEX_TIP], (255, 0, 255), 2)
+    if label == "Right":  # pitch hand
+        cv2.circle(frame, pts[INDEX_TIP], 9, (0, 0, 255), 2)
+    elif label == "Left":  # volume hand
+        cv2.circle(frame, pts[INDEX_TIP], 9, (255, 0, 0), 2)
+        cv2.circle(frame, pts[THUMB_TIP], 9, (255, 0, 0), 2)
+        cv2.line(frame, pts[THUMB_TIP], pts[INDEX_TIP], (255, 0, 255), 2)
+
+    wrist_x, wrist_y = pts[0]
+    cv2.putText(
+        frame, label, (wrist_x - 20, wrist_y + 25),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2,
+    )
 
 
 def main():
-    tracker = HandTracker(num_hands=1)
+    tracker = HandTracker(num_hands=2)
     synth = SineSynth()
     synth.start()
 
@@ -73,21 +86,29 @@ def main():
 
             result = tracker.process(frame_rgb, timestamp_ms)
 
-            if result.hand_landmarks:
-                landmarks = result.hand_landmarks[0]
-                index_tip = landmarks[INDEX_TIP]
-                thumb_tip = landmarks[THUMB_TIP]
+            hands = {}
+            for landmarks, handedness in zip(result.hand_landmarks, result.handedness):
+                hands[handedness[0].category_name] = landmarks
+                draw_hand(frame, landmarks, handedness[0].category_name)
 
-                freq = freq_from_y(index_tip.y)
-                pinch_dist = float(np.hypot(
-                    index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y
-                ))
-                amp = amp_from_pinch(pinch_dist)
+            right = hands.get("Right")
+            left = hands.get("Left")
+
+            if right is not None:
+                freq = freq_from_y(right[INDEX_TIP].y)
+
+                if left is not None:
+                    thumb_tip, index_tip = left[THUMB_TIP], left[INDEX_TIP]
+                    pinch_dist = float(np.hypot(
+                        index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y
+                    ))
+                    amp = amp_from_pinch(pinch_dist)
+                else:
+                    amp = DEFAULT_AMP
 
                 synth.set_frequency(freq)
                 synth.set_amplitude(amp)
 
-                draw_hand(frame, landmarks)
                 cv2.putText(
                     frame, f"{freq:6.1f} Hz  vol {amp:.2f}",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2,
@@ -95,7 +116,7 @@ def main():
             else:
                 synth.set_amplitude(0.0)
                 cv2.putText(
-                    frame, "no hand detected",
+                    frame, "show right hand for pitch",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2,
                 )
 
