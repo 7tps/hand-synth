@@ -169,26 +169,36 @@ def is_trustworthy(handedness_score: float, *landmarks) -> bool:
     )
 
 
-def chord_index_from_xy(x_norm: float, y_norm: float) -> int:
-    """Maps a point in the frame to one of the CHORDS grid cells."""
-    col = int(np.clip(x_norm, 0.0, 0.999) * CHORD_GRID_COLS)
+def hand_half(x_norm: float) -> str:
+    """Which half of the frame a normalized x position falls in."""
+    return "left" if x_norm < 0.5 else "right"
+
+
+def chord_index_from_xy(x_norm: float, y_norm: float, half: str) -> int:
+    """Maps a point within its half of the frame to one of the CHORDS grid
+    cells, which are laid out across just that half."""
+    local_x = x_norm * 2.0 if half == "left" else (x_norm - 0.5) * 2.0
+    col = int(np.clip(local_x, 0.0, 0.999) * CHORD_GRID_COLS)
     row = int(np.clip(y_norm, 0.0, 0.999) * CHORD_GRID_ROWS)
     col = int(np.clip(col, 0, CHORD_GRID_COLS - 1))
     row = int(np.clip(row, 0, CHORD_GRID_ROWS - 1))
     return row * CHORD_GRID_COLS + col
 
 
-def draw_chord_grid(frame, current_idx: int):
+def draw_chord_grid(frame, current_idx: int, half: str):
     h, w = frame.shape[:2]
+    gx0, gx1 = (0, w // 2) if half == "left" else (w // 2, w)
+    grid_w = gx1 - gx0
+
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, h), (30, 30, 30), -1)
+    cv2.rectangle(overlay, (gx0, 0), (gx1, h), (30, 30, 30), -1)
     cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
 
-    cell_w, cell_h = w / CHORD_GRID_COLS, h / CHORD_GRID_ROWS
+    cell_w, cell_h = grid_w / CHORD_GRID_COLS, h / CHORD_GRID_ROWS
     for i, (name, _) in enumerate(CHORDS):
         row, col = divmod(i, CHORD_GRID_COLS)
-        x0, y0 = int(col * cell_w), int(row * cell_h)
-        x1, y1 = int((col + 1) * cell_w), int((row + 1) * cell_h)
+        x0, y0 = int(gx0 + col * cell_w), int(row * cell_h)
+        x1, y1 = int(gx0 + (col + 1) * cell_w), int((row + 1) * cell_h)
         active = i == current_idx
 
         border_color = (0, 255, 0) if active else (120, 120, 120)
@@ -371,13 +381,13 @@ def main():
                     pinch_y = (index_tip.y + thumb_tip.y) / 2.0
                     current_amp = amp_from_y(pinch_y)
 
-                if chord_pinched and is_trustworthy(scores["Right"], thumb_tip, middle_tip):
+                if chord_pinched:
                     select_x = (middle_tip.x + thumb_tip.x) / 2.0
                     select_y = (middle_tip.y + thumb_tip.y) / 2.0
-                    current_chord_idx = chord_index_from_xy(select_x, select_y)
-
-                if chord_pinched:
-                    draw_chord_grid(frame, current_chord_idx)
+                    half = hand_half(select_x)
+                    if is_trustworthy(scores["Right"], thumb_tip, middle_tip):
+                        current_chord_idx = chord_index_from_xy(select_x, select_y, half)
+                    draw_chord_grid(frame, current_chord_idx, half)
                 draw_hand(frame, right, "Right", vol_pinched or chord_pinched)
 
             pitch_hand_active = (
